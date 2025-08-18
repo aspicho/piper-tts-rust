@@ -1,169 +1,244 @@
 use std::collections::HashMap;
 
+use ndarray::{Array2, Array3};
+use ort::{
+    session::{builder::GraphOptimizationLevel, Session}
+};
+
 pub struct PhonemeGen {
-    dictionary: HashMap<String, String>,
-    arpabet_to_ipa: HashMap<String, String>,
-    dictionary_path: String,
+    decoder_path: String,
+    encoder_path: String,
+    tokenizer_path: String,
+    vocab_path: String,
     arpabet_mapping_path: String,
+
+    encoder: Option<Session>,
+    decoder: Option<Session>,
+    tokenizer: Option<tokenizers::Tokenizer>,
+    arpabet_mapping: Option<HashMap<String, String>>,
+    pub vocab: Option<(HashMap<String, usize>, HashMap<usize, String>)>,
 }
 
 impl PhonemeGen {
-    pub fn new(dictionary_path: &str, arpabet_mapping_path: &str) -> Self {
-        let dictionary = Self::load_dictionary(dictionary_path);
-        let arpabet_to_ipa = Self::load_arpabet_mapping(arpabet_mapping_path);
-        
-        PhonemeGen {
-            dictionary,
-            arpabet_to_ipa,
-            dictionary_path: dictionary_path.to_string(),
-            arpabet_mapping_path: arpabet_mapping_path.to_string(),
+    pub fn new(
+        decoder_path: String,
+        encoder_path: String,
+        tokenizer_path: String,
+        vocab_path: String,
+        arpabet_mapping_path: String,
+    ) -> Self {
+        Self {
+            decoder_path,
+            encoder_path,
+            tokenizer_path,
+            arpabet_mapping_path,
+            vocab_path,
+            encoder: None,
+            decoder: None,
+            tokenizer: None,
+            vocab: None,
+            arpabet_mapping: None,
         }
     }
 
-    fn load_dictionary(path: &str) -> HashMap<String, String> {
-        let bytes = std::fs::read(path)
-            .expect("Failed to read the dictionary file");
-        let dictionary_data = String::from_utf8_lossy(&bytes).to_string();
+    pub fn load(&mut self) -> ort::Result<()> {
+        let encoder_model = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?
+            .commit_from_file(&self.encoder_path)?;
 
-        let mut phoneme_id_map: HashMap<String, String> = HashMap::new();
+        let decoder_model = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?
+            .commit_from_file(&self.decoder_path)?;
 
-        for line in dictionary_data.lines() {
-            if line.starts_with(";;;") || line.is_empty() {
-                continue;
+        let tokenizer = tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+            .expect("Failed to load tokenizer");
+
+        let vocab = {
+            let vocab_data = std::fs::read_to_string(&self.vocab_path)
+                .expect("Failed to read vocabulary file");
+            let vocab_map: HashMap<String, usize> = serde_json::from_str(&vocab_data)
+                .expect("Failed to parse vocabulary JSON");
+
+            let mut reverse_vocab_map: HashMap<usize, String> = HashMap::new();
+
+            for (key, value) in &vocab_map {
+                reverse_vocab_map.insert(*value, key.clone());
             }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let word = parts[0].to_string();
-            let phonemes = parts[1..].join(" ");
-            phoneme_id_map.insert(word, phonemes);
-        }
-        phoneme_id_map
-    }
-
-    fn load_arpabet_mapping(path: &str) -> HashMap<String, String> {
-        let bytes = std::fs::read(path)
-            .expect("Failed to read the ARPAbet mapping file");
-        let mapping_data = String::from_utf8_lossy(&bytes).to_string();
-
-        let mut arpabet_to_ipa: HashMap<String, String> = HashMap::new();
-
-        for line in mapping_data.lines() {
-            let parts: Vec<&str> = line.split(", ").collect();
-            if parts.len() != 2 {
-                continue;
-            }
-            let arpabet = parts[0].trim().to_string();
-            let ipa = parts[1].trim().to_string();
-            arpabet_to_ipa.insert(arpabet, ipa);
-        }
-        arpabet_to_ipa
-    }
-
-    pub fn text_to_sentences(&self, text: &str) -> Vec<String> {
-        let sentance_endings = vec![".", "!", "?", ";"];
-        text.split_inclusive(|c: char| sentance_endings.contains(&c.to_string().as_str()))
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-            .collect()
-    }
-
-    pub fn sentences_to_words(&self, sentences: &[String]) -> Vec<Vec<String>> {
-        sentences.iter()
-            .map(|s| s.split_whitespace().map(|w| w.to_string()).collect())
-            .collect()
-    }
-
-    fn clear_word(word: &str, symbols: Option<&[(char, &str)]>) -> String {
-        let symbols_to_replace = symbols.unwrap_or(&[
-            ('^', ""),
-            ('_', ""),
-            (',', ""),
-            (';', ""), 
-            ('(', ""), 
-            (')', ""), 
-            ]);
             
-        let mut cleaned_word = word.to_string();
-        for (symbol, replacement) in symbols_to_replace {
-            cleaned_word = cleaned_word.replace(*symbol, replacement);
+            (vocab_map, reverse_vocab_map)
+        };
+
+        let arpabet_mapping = {
+            let bytes = std::fs::read(self.arpabet_mapping_path.clone())
+                .expect("Failed to read the ARPAbet mapping file");
+            let mapping_data = String::from_utf8_lossy(&bytes).to_string();
+
+            let mut arpabet_to_ipa: HashMap<String, String> = HashMap::new();
+
+            for line in mapping_data.lines() {
+                let parts: Vec<&str> = line.split(", ").collect();
+                if parts.len() != 2 {
+                    continue;
+                }
+                let arpabet = parts[0].trim().to_string();
+                let ipa = parts[1].trim().to_string();
+                arpabet_to_ipa.insert(arpabet, ipa);
+            }
+            arpabet_to_ipa
+        };
+
+        self.encoder = Some(encoder_model);
+        self.decoder = Some(decoder_model);
+        self.tokenizer = Some(tokenizer);
+        self.vocab = Some(vocab);
+        self.arpabet_mapping = Some(arpabet_mapping);
+        Ok(())
+    }
+    
+    fn argmax(slice: &[f32]) -> usize {
+        let mut best = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for (i, &v) in slice.iter().enumerate() {
+            if v > best_val {
+                best_val = v;
+                best = i;
+            }
         }
-        cleaned_word
+        best
     }
 
-    pub fn words_to_arpabet(&self, words: &[Vec<String>], sentance_endings: Option<&[&str]>, symbols_to_replace: Option<&[(char, &str)]>) -> Vec<Vec<String>> {
-        let sentance_endings_ = sentance_endings.unwrap_or(&[".", "!", "?", ";"]);
+    pub fn word_to_tokens(
+        &mut self,
+        word: &str,
+    ) -> Result<(Vec<usize>, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {        
+        let encoded = self.tokenizer.as_mut().unwrap().encode(word, true)?;
+        let input_ids: Vec<i64> = encoded.get_ids().iter().map(|&id| id as i64).collect();
+        let attention_mask: Vec<i64> = vec![1; input_ids.len()];
 
-        words.iter()
-            .map(|word_list| {
-                word_list.iter()
-                    .map(|word| {
-                        let cleaned_word = Self::clear_word(word, symbols_to_replace);
-                        if cleaned_word.is_empty() {
-                            return String::new();
-                        }
+        let input_array = Array2::<i64>::from_shape_vec([1, input_ids.len()], input_ids)?;
+        let attention_mask_array = Array2::<i64>::from_shape_vec([1, attention_mask.len()], attention_mask)?;
+        
+        let input_ids_tensor = ort::value::Tensor::from_array(input_array);
+        let attention_mask_tensor = ort::value::Tensor::from_array(attention_mask_array.clone());
 
-                        let cleaned_word = cleaned_word.chars()
-                            .filter(|c| !sentance_endings_.contains(&c.to_string().as_str()))
-                            .collect::<String>();
+        let encoder_output_array = {
+            let encoder_outputs = self.encoder.as_mut().unwrap().run(vec![
+                ("input_ids", input_ids_tensor?),
+                ("attention_mask", attention_mask_tensor?),
+            ])?;
 
-                        self.dictionary.get(&cleaned_word.to_uppercase())
-                            .cloned()
-                            .unwrap_or_else(|| cleaned_word)
-                    })
-                    .collect()
-            })
-            .collect()
+            let (encoder_output_shape, encoder_output_tensor) = encoder_outputs.get("last_hidden_state")
+                .expect("Failed to get encoder output")
+                .try_extract_tensor::<f32>()?;
+
+            Array3::<f32>::from_shape_vec(
+                [1, encoder_output_shape[1] as usize, encoder_output_shape[2] as usize],
+                encoder_output_tensor.to_vec()
+            )?
+        };
+
+        let (token_ids, tokens) = self.greedy_decode(
+            &encoder_output_array,
+            &attention_mask_array,
+            50,
+        )?;
+        Ok((token_ids, tokens))
     }
 
-    pub fn arpabet_to_ipa(&self, arpabet_words: &[Vec<String>]) -> Vec<Vec<String>> {
-        arpabet_words.iter()
-            .map(|word_list| {
-                word_list.iter()
-                    .map(|arpabet_word| {
-                        if arpabet_word.is_empty() {
-                            return String::new();
-                        }
-                        
-                        let converted: Vec<String> = arpabet_word.split_whitespace()
-                            .map(|arpabet| {
-                                self.arpabet_to_ipa.get(arpabet)
-                                    .map(|ipa| ipa.to_string())
-                                    .unwrap_or_else(|| arpabet.to_string())
-                            })
-                            .collect();
-                        
-                        if converted.is_empty() {
-                            arpabet_word.clone()
-                        } else {
-                            converted.join("")
-                        }
-                    })
-                    .collect()
-            })
-            .collect()
+    fn greedy_decode(
+        &mut self,
+        encoder_output: &Array3<f32>,
+        encoder_attention_mask: &Array2<i64>,
+        max_len: usize,
+    ) -> Result<(Vec<usize>, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
+        let bos_id = 2i64;  // </s> is used as BOS for BART decoder
+        let eos_id = 2i64;  // </s>
+        let pad_id = 1i64;  // <pad>
+        let s_id = 0i64;    // <s>
+
+        let mut decoder_ids: Vec<i64> = vec![bos_id];
+        let mut decoded_ids: Vec<usize> = Vec::new();
+        let mut decoded_tokens: Vec<String> = Vec::new();
+
+        for _step in 0..max_len {
+            let seq_len = decoder_ids.len();
+            let dec_array = Array2::<i64>::from_shape_vec([1, seq_len], decoder_ids.clone())
+                .expect("Failed to create decoder Array2");
+            let dec_input_value = ort::value::Value::from_array(dec_array)?;
+            let encoder_output_value = ort::value::Value::from_array(encoder_output.clone())?;
+            let encoder_attention_mask_value = ort::value::Value::from_array(encoder_attention_mask.clone())?;
+            let inputs = ort::inputs!{
+                "encoder_attention_mask" => encoder_attention_mask_value,
+                "input_ids" => dec_input_value,
+                "encoder_hidden_states" => encoder_output_value,
+            };
+            let outputs = self.decoder.as_mut().unwrap().run(inputs)?;
+            let (shape, flat_logits) = outputs
+                .get("logits")
+                .expect("No 'logits' output")
+                .try_extract_tensor::<f32>()?;
+            if shape.len() != 3 {
+                panic!("Unexpected logits shape: {:?}", shape);
+            }
+            let vocab_size = shape[2] as usize;
+            let cur_decoder_seq_len = shape[1] as usize;
+            let start = (cur_decoder_seq_len - 1) * vocab_size;
+            let end = start + vocab_size;
+            let last_logits_slice = &flat_logits[start..end];
+
+            let next_id_usize = PhonemeGen::argmax(last_logits_slice);
+            let next_id = next_id_usize as i64;
+            decoder_ids.push(next_id);
+
+            let tok_str = self.vocab.as_ref().unwrap().1.get(&next_id_usize)
+                .cloned()
+                .unwrap_or_else(|| format!("<{}>", next_id_usize));
+
+            if next_id == eos_id {
+                break;
+            }
+
+            if next_id != bos_id && next_id != pad_id && next_id != eos_id && next_id != s_id {
+                decoded_ids.push(next_id_usize);
+                decoded_tokens.push(tok_str);
+            }
+        }
+
+        Ok((decoded_ids, decoded_tokens))
     }
 
-    pub fn format_ipa_string(&self, ipa_words: &[Vec<String>], char_separator: &str, string_start: &str) -> String {
-        let ipa_string = ipa_words.iter()
-            .map(|word_list| word_list.join(" ") + ".")
-            .collect::<Vec<String>>()
-            .join(" ");
-
-        let formated_ipa_string = string_start.to_string() + &ipa_string.chars()
-            .map(|c| c.to_string())
-            .collect::<Vec<String>>()
-            .join(char_separator);
-
-        formated_ipa_string
+    pub fn arpabet_to_ipa(&self, word: Vec<String>) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(mapping) = &self.arpabet_mapping {
+            let mut ipa_phonemes = Vec::new();
+            for phoneme in word {
+                if let Some(ipa) = mapping.get(&phoneme) {
+                    ipa_phonemes.push(ipa.clone());
+                } else {
+                    ipa_phonemes.push(phoneme); // Fallback to original if no mapping found
+                }
+            }
+            Ok(ipa_phonemes)
+        } else {
+            Err("ARPAbet mapping not loaded".into())
+        }
     }
 
-    pub fn text_to_ipa(&self, text: &str) -> String {
-        let sentences = self.text_to_sentences(text);
-        let words = self.sentences_to_words(&sentences);
-        let arpabet_words = self.words_to_arpabet(&words, None, None);
-        let ipa_words = self.arpabet_to_ipa(&arpabet_words);
-        self.format_ipa_string(&ipa_words, "_", "^")
+    pub fn process_word(
+        &mut self,
+        word: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if self.encoder.is_none() || self.decoder.is_none() || self.tokenizer.is_none() {
+            return Err("Models and tokenizer not loaded".into());
+        }
+        
+        let tokens = self.word_to_tokens(word)?;
+        if tokens.0.is_empty() {
+            return Err("No tokens generated".into());
+        }
+
+        let ipa_phonemes = self.arpabet_to_ipa(tokens.1)?;
+        Ok(ipa_phonemes)
     }
 }
