@@ -241,4 +241,78 @@ impl PhonemeGen {
         let ipa_phonemes = self.arpabet_to_ipa(tokens.1)?;
         Ok(ipa_phonemes)
     }
+
+    pub fn text_to_sentences(
+        &self,
+        text: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let sentence_endings = vec![".", "!", "?"];
+        let mut sentences: Vec<String> = Vec::new();
+
+        let mut current_sentence = String::new();
+        for word in text.split_whitespace() {
+            if sentence_endings.iter().any(|&ending| word.ends_with(ending)) {
+                current_sentence.push_str(word);
+                sentences.push(current_sentence.trim().to_string());
+                current_sentence.clear();
+            } else {
+                current_sentence.push_str(word);
+                current_sentence.push(' ');
+            }
+        }
+
+        if !current_sentence.is_empty() {
+            sentences.push(current_sentence.trim().to_string());
+        }
+        Ok(sentences)
+    }
+
+    pub fn process_senteces(
+        &mut self,
+        sentences: Vec<String>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut processed_sentences: Vec<String> = Vec::new();
+        for sentence in sentences {
+            let bos = "^";
+            let eos = "$";
+            let pad = "_";
+
+            let mut processed_sentence: String = String::new();
+
+            processed_sentence.push_str(bos);
+            for word in sentence.split_whitespace() {                
+                let punctuation = word.chars().last().map(|c| if c.is_ascii_punctuation() { c } else { ' ' }).unwrap_or(' ');
+                let word_without_punctuation = word.trim_end_matches(punctuation);
+
+                let token_phonemes = self.process_word(word_without_punctuation)?;
+
+                if !token_phonemes.is_empty() {
+                    processed_sentence.push_str(&token_phonemes.join(""));
+                }            
+                if punctuation != ' ' {
+                    processed_sentence.push(punctuation);
+                }
+                processed_sentence.push(' ');
+            }
+            processed_sentence = processed_sentence.trim().to_string()
+                .chars().map(|c| c.to_string()).collect::<Vec<String>>().join(pad);
+
+            processed_sentence.push_str(pad);
+            processed_sentence.push_str(eos);
+
+            if !processed_sentence.is_empty() {
+                processed_sentences.push(processed_sentence);
+            }
+        }
+
+        Ok(processed_sentences)
+    }
+
+    pub fn process_text(
+        &mut self,
+        text: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let sentences = self.text_to_sentences(text)?;
+        Ok(self.process_senteces(sentences).unwrap().join(""))
+    }
 }

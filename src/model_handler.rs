@@ -1,10 +1,9 @@
 use ndarray::{Array1, Array2};
 use ort::{
-    session::{builder::GraphOptimizationLevel, Session},
-    Error,
+    session::{builder::GraphOptimizationLevel, Session}, tensor::Shape, Error
 };
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::{collections::HashMap, io::Write};
 
 #[derive(Deserialize, Debug)]
 pub struct Audio {
@@ -115,6 +114,57 @@ impl Model {
         };
 
         Ok(self.model.run(inputs)?)
+    }
+
+    pub fn process_ipa_string(
+        &mut self,
+        ipa_string: &str,
+    ) -> Result<(Shape, Vec<f32>), Box<dyn std::error::Error>> {
+        let phoneme_ids = self.ipa_string_to_phoneme_ids(ipa_string)?;
+        let outputs = self.run_inference(phoneme_ids)?;
+        let (waveform_tensor_shape, waveform_tensor) = outputs["output"].try_extract_tensor::<f32>()?;
+        
+        Ok((waveform_tensor_shape.clone(), waveform_tensor.to_vec()))
+    }
+
+    pub fn write_wav_file(
+        &self,
+        waveform: &[f32],
+        sample_rate: u64,
+        output_path: &str,
+    ) -> std::io::Result<()> {
+        let start = std::time::Instant::now();
+        let mut file = std::fs::File::create(output_path)
+            .expect("Failed to create output file");
+
+        let header: Vec<u8> = vec![
+            "RIFF".as_bytes().to_vec(),
+            (36 + waveform.len() as u32 * 2).to_le_bytes().to_vec(),
+            "WAVE".as_bytes().to_vec(),
+            "fmt ".as_bytes().to_vec(),
+            (16u32).to_le_bytes().to_vec(), // Subchunk1Size
+            (1u16).to_le_bytes().to_vec(), // AudioFormat (PCM)
+            (1u16).to_le_bytes().to_vec(), // NumChannels (Mono)
+            (sample_rate.clone() as u32).to_le_bytes().to_vec(), // SampleRate
+            (sample_rate.clone() as u32 * 2).to_le_bytes().to_vec(), // ByteRate
+            (2u16).to_le_bytes().to_vec(), // BlockAlign
+            (16u16).to_le_bytes().to_vec(), // BitsPerSample
+            "data".as_bytes().to_vec(),
+            (waveform.len() as u32 * 2).to_le_bytes().to_vec(), // Subchunk2Size
+        ].concat();
+        file.write_all(&header)
+            .expect("Failed to write WAV header");
+
+        let samples: Vec<i16> = waveform.iter()
+            .map(|&sample| (sample * i16::MAX as f32) as i16)
+            .collect();
+        file.write_all(&samples.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<u8>>())
+            .expect("Failed to write WAV samples");
+
+        println!("WAV file created successfully at: {}", output_path);
+        println!("WAV file creation took: {:?}", start.elapsed());
+
+        Ok(())
     }
 }
 
