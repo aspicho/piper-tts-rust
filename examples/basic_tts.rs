@@ -1,9 +1,4 @@
-mod phoneme_gen;
-use phoneme_gen::PhonemeGen;
-mod model_handler;
-use model_handler::Model;
-
-
+use piper_tts_rust::{PhonemeGen, Model};
 
 fn main() -> ort::Result<()> {    
     let decoder_path = "models/g2p/decoder_model_mini_bart_g2p.onnx".to_string();

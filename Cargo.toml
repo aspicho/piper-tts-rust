@@ -2,6 +2,21 @@
 name = "piper-tts-rust"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
+description = "Simple interface for Piper TTS onnx models made with a pykeio ort onnx runtime."
+repository = "https://github.com/aspicho/piper-tts-rust"
+license = "MIT"
+keywords = ["piper", "tts", "text-to-speech", "g2p", "phonemization"]
+authors = ["Aspicho <mishchenkodaniil@gmail.com>"]
+homepage = "https://github.com/aspicho/piper-tts-rust"
+
+[lib]
+name = "piper_tts_rust"
+path = "src/lib.rs"
+
+[[example]]
+name = "basic_tts"
+path = "examples/basic_tts.rs"
 
 [dependencies]
 ndarray = "0.16.1"
