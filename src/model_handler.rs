@@ -2,23 +2,23 @@ use ndarray::{Array1, Array2};
 use ort::{
     session::{builder::GraphOptimizationLevel, Session}, tensor::Shape, Error
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write};
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Audio {
     pub sample_rate: u64,
     pub quality: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Inference {
     pub noise_scale: f32,
     pub length_scale: f32,
     pub noise_w: f32,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Language {
     pub code: String,
     pub family: String,
@@ -28,7 +28,7 @@ pub struct Language {
     pub country_english: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Config {
     pub audio: Audio,
     pub inference: Inference,

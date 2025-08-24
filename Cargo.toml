@@ -1,6 +1,6 @@
 [package]
 name = "piper-tts-rust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 readme = "README.md"
 description = "Simple interface for Piper TTS onnx models made with a pykeio ort onnx runtime."
